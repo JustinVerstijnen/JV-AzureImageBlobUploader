@@ -1,3 +1,5 @@
+# Set-ExecutionPolicy Unrestricted -Scope Process
+
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Web
