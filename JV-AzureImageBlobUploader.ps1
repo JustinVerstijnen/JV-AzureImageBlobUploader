@@ -1,4 +1,4 @@
-# Set-ExecutionPolicy Unrestricted -Scope Process
+﻿# Set-ExecutionPolicy Unrestricted -Scope Process
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -581,6 +581,9 @@ function Upload-BlobFile {
         -ContentType $contentType `
         -ExtraHeaders @{
             "x-ms-blob-type" = "BlockBlob"
+            "x-ms-blob-content-type" = $contentType
+            "x-ms-blob-content-disposition" = "inline"
+            "x-ms-blob-cache-control" = "no-cache"
         }
 
     if (-not $result.Success) {
