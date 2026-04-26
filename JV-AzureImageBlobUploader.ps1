@@ -4,6 +4,21 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Web
 
+try {
+    $setHighDpiMode = [System.Windows.Forms.Application].GetMethod("SetHighDpiMode", [System.Reflection.BindingFlags]::Public -bor [System.Reflection.BindingFlags]::Static)
+    if ($setHighDpiMode) {
+        $highDpiModeType = [System.Type]::GetType("System.Windows.Forms.HighDpiMode, System.Windows.Forms")
+        if ($highDpiModeType) {
+            $perMonitorV2 = [System.Enum]::Parse($highDpiModeType, "PerMonitorV2")
+            [void]$setHighDpiMode.Invoke($null, @($perMonitorV2))
+        }
+    }
+}
+catch {
+    # Older Windows PowerShell/.NET versions do not expose HighDpiMode.
+    # AutoScaleMode below still gives DPI-aware scaling on supported systems.
+}
+
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
 $script:ApiVersion = "2023-11-03"
@@ -601,25 +616,44 @@ function Add-FilesToList {
 }
 
 function Copy-AllResultUrls {
-    param([System.Windows.Forms.ListView]$ListView)
+    param([System.Windows.Forms.DataGridView]$GridView)
 
     $urls = New-Object System.Collections.Generic.List[string]
 
-    foreach ($item in $ListView.Items) {
-        if ($item.SubItems.Count -ge 4) {
-            $url = $item.SubItems[3].Text
-            if (-not [string]::IsNullOrWhiteSpace($url) -and $url -match '^https?://') {
-                $urls.Add($url)
-            }
+    foreach ($row in $GridView.Rows) {
+        if ($row.IsNewRow) {
+            continue
+        }
+
+        $url = [string]$row.Cells["PublicUrl"].Value
+        if (-not [string]::IsNullOrWhiteSpace($url) -and $url -match '^https?://') {
+            $urls.Add($url)
         }
     }
 
     if ($urls.Count -gt 0) {
         [System.Windows.Forms.Clipboard]::SetText(($urls -join [Environment]::NewLine))
-        Show-Info "All result URLs have been copied to the clipboard."
     }
-    else {
-        Show-Info "No URLs are available to copy yet."
+}
+
+function Copy-ResultUrlFromRow {
+    param(
+        [System.Windows.Forms.DataGridView]$GridView,
+        [int]$RowIndex
+    )
+
+    if ($RowIndex -lt 0 -or $RowIndex -ge $GridView.Rows.Count) {
+        return
+    }
+
+    $row = $GridView.Rows[$RowIndex]
+    if ($row.IsNewRow) {
+        return
+    }
+
+    $url = [string]$row.Cells["PublicUrl"].Value
+    if (-not [string]::IsNullOrWhiteSpace($url) -and $url -match '^https?://') {
+        [System.Windows.Forms.Clipboard]::SetText($url)
     }
 }
 
@@ -704,8 +738,10 @@ function Try-AutoLoadContainers {
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Azure Blob Image Uploader"
-$form.Size = New-Object System.Drawing.Size(1500, 980)
-$form.MinimumSize = New-Object System.Drawing.Size(1300, 860)
+$form.Size = New-Object System.Drawing.Size(1500, 1020)
+$form.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::Dpi
+$form.AutoScaleDimensions = New-Object System.Drawing.SizeF(96, 96)
+$form.MinimumSize = New-Object System.Drawing.Size(1300, 900)
 $form.StartPosition = "CenterScreen"
 $form.BackColor = [System.Drawing.Color]::FromArgb(245, 247, 251)
 $form.TopMost = $true
@@ -733,6 +769,7 @@ $settingsGroup.Text = "Settings"
 $settingsGroup.Font = $fontBold
 $settingsGroup.Location = New-Object System.Drawing.Point(20, 90)
 $settingsGroup.Size = New-Object System.Drawing.Size(540, 260)
+$settingsGroup.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left
 $form.Controls.Add($settingsGroup)
 
 $uploadGroup = New-Object System.Windows.Forms.GroupBox
@@ -740,6 +777,7 @@ $uploadGroup.Text = "Upload"
 $uploadGroup.Font = $fontBold
 $uploadGroup.Location = New-Object System.Drawing.Point(580, 90)
 $uploadGroup.Size = New-Object System.Drawing.Size(420, 260)
+$uploadGroup.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left
 $form.Controls.Add($uploadGroup)
 
 $explorerGroup = New-Object System.Windows.Forms.GroupBox
@@ -747,6 +785,7 @@ $explorerGroup.Text = "Container Folder Explorer"
 $explorerGroup.Font = $fontBold
 $explorerGroup.Location = New-Object System.Drawing.Point(1020, 90)
 $explorerGroup.Size = New-Object System.Drawing.Size(440, 300)
+$explorerGroup.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
 $form.Controls.Add($explorerGroup)
 
 function New-Label {
@@ -823,10 +862,7 @@ New-Label "Folder / blob prefix" 155 90 $uploadGroup | Out-Null
 $txtFolderPath = New-TextBox 155 110 240 $uploadGroup
 
 $btnLoadFolders = New-Button "Load Folders" 15 155 120 $uploadGroup
-$btnAddFiles = New-Button "Choose Files" 150 155 110 $uploadGroup
-$btnUpload = New-Button "Upload Files" 275 155 120 $uploadGroup
-$btnClearFiles = New-Button "Clear Files" 15 195 120 $uploadGroup
-$btnCopyAllUrls = New-Button "Copy All URLs" 150 195 120 $uploadGroup
+$btnCopyAllUrls = New-Button "Copy All URLs" 150 155 120 $uploadGroup
 
 $lblUploadStatus = New-Object System.Windows.Forms.Label
 $lblUploadStatus.Text = ""
@@ -855,6 +891,7 @@ $explorerGroup.Controls.Add($listFolders)
 $dropPanel = New-Object System.Windows.Forms.Panel
 $dropPanel.Location = New-Object System.Drawing.Point(20, 410)
 $dropPanel.Size = New-Object System.Drawing.Size(1440, 150)
+$dropPanel.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
 $dropPanel.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
 $dropPanel.BackColor = [System.Drawing.Color]::FromArgb(235, 243, 255)
 $dropPanel.AllowDrop = $true
@@ -883,36 +920,103 @@ $form.Controls.Add($listLabel)
 
 $listFiles = New-Object System.Windows.Forms.ListBox
 $listFiles.Location = New-Object System.Drawing.Point(20, 605)
-$listFiles.Size = New-Object System.Drawing.Size(1440, 130)
+$listFiles.Size = New-Object System.Drawing.Size(1440, 110)
 $listFiles.Font = $fontRegular
+$listFiles.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
 $form.Controls.Add($listFiles)
+
+$btnAddFiles = New-Object System.Windows.Forms.Button
+$btnAddFiles.Text = "Choose Files"
+$btnAddFiles.Location = New-Object System.Drawing.Point(20, 725)
+$btnAddFiles.Size = New-Object System.Drawing.Size(150, 42)
+$btnAddFiles.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Regular)
+$btnAddFiles.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left
+$form.Controls.Add($btnAddFiles)
+
+$btnClearFiles = New-Object System.Windows.Forms.Button
+$btnClearFiles.Text = "Clear Files"
+$btnClearFiles.Location = New-Object System.Drawing.Point(185, 725)
+$btnClearFiles.Size = New-Object System.Drawing.Size(150, 42)
+$btnClearFiles.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Regular)
+$btnClearFiles.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left
+$form.Controls.Add($btnClearFiles)
+
+$btnUpload = New-Object System.Windows.Forms.Button
+$btnUpload.Text = "Upload Files"
+$btnUpload.Location = New-Object System.Drawing.Point(350, 725)
+$btnUpload.Size = New-Object System.Drawing.Size(220, 42)
+$btnUpload.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+$btnUpload.BackColor = [System.Drawing.Color]::FromArgb(36, 140, 76)
+$btnUpload.ForeColor = [System.Drawing.Color]::White
+$btnUpload.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$btnUpload.FlatAppearance.BorderSize = 0
+$btnUpload.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left
+$form.Controls.Add($btnUpload)
 
 $resultsLabel = New-Object System.Windows.Forms.Label
 $resultsLabel.Text = "Results"
 $resultsLabel.Font = $fontBold
 $resultsLabel.AutoSize = $true
-$resultsLabel.Location = New-Object System.Drawing.Point(20, 755)
+$resultsLabel.Location = New-Object System.Drawing.Point(20, 785)
 $form.Controls.Add($resultsLabel)
 
-$listResults = New-Object System.Windows.Forms.ListView
-$listResults.Location = New-Object System.Drawing.Point(20, 780)
+$listResults = New-Object System.Windows.Forms.DataGridView
+$listResults.Location = New-Object System.Drawing.Point(20, 810)
 $listResults.Size = New-Object System.Drawing.Size(1440, 160)
-$listResults.View = [System.Windows.Forms.View]::Details
-$listResults.FullRowSelect = $true
-$listResults.GridLines = $true
+$listResults.AllowUserToAddRows = $false
+$listResults.AllowUserToDeleteRows = $false
+$listResults.AllowUserToResizeRows = $false
+$listResults.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAutoSizeColumnsMode]::Fill
+$listResults.BackgroundColor = [System.Drawing.Color]::White
+$listResults.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+$listResults.ColumnHeadersHeightSizeMode = [System.Windows.Forms.DataGridViewColumnHeadersHeightSizeMode]::AutoSize
+$listResults.EditMode = [System.Windows.Forms.DataGridViewEditMode]::EditProgrammatically
 $listResults.Font = $fontRegular
-[void]$listResults.Columns.Add("Original", 220)
-[void]$listResults.Columns.Add("New File Name", 240)
-[void]$listResults.Columns.Add("Blob Path", 360)
-[void]$listResults.Columns.Add("Public URL", 500)
-[void]$listResults.Columns.Add("Status", 90)
-$form.Controls.Add($listResults)
+$listResults.MultiSelect = $false
+$listResults.ReadOnly = $true
+$listResults.RowHeadersVisible = $false
+$listResults.SelectionMode = [System.Windows.Forms.DataGridViewSelectionMode]::FullRowSelect
+$listResults.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
 
-$contextMenu = New-Object System.Windows.Forms.ContextMenuStrip
-$copyUrlItem = New-Object System.Windows.Forms.ToolStripMenuItem
-$copyUrlItem.Text = "Copy URL"
-[void]$contextMenu.Items.Add($copyUrlItem)
-$listResults.ContextMenuStrip = $contextMenu
+$colOriginal = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
+$colOriginal.Name = "Original"
+$colOriginal.HeaderText = "Original"
+$colOriginal.FillWeight = 18
+[void]$listResults.Columns.Add($colOriginal)
+
+$colNewFileName = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
+$colNewFileName.Name = "NewFileName"
+$colNewFileName.HeaderText = "New File Name"
+$colNewFileName.FillWeight = 20
+[void]$listResults.Columns.Add($colNewFileName)
+
+$colBlobPath = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
+$colBlobPath.Name = "BlobPath"
+$colBlobPath.HeaderText = "Blob Path"
+$colBlobPath.FillWeight = 25
+[void]$listResults.Columns.Add($colBlobPath)
+
+$colPublicUrl = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
+$colPublicUrl.Name = "PublicUrl"
+$colPublicUrl.HeaderText = "Public URL"
+$colPublicUrl.FillWeight = 32
+[void]$listResults.Columns.Add($colPublicUrl)
+
+$colCopy = New-Object System.Windows.Forms.DataGridViewButtonColumn
+$colCopy.Name = "Copy"
+$colCopy.HeaderText = "Copy"
+$colCopy.Text = "Copy"
+$colCopy.UseColumnTextForButtonValue = $true
+$colCopy.FillWeight = 8
+[void]$listResults.Columns.Add($colCopy)
+
+$colStatus = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
+$colStatus.Name = "Status"
+$colStatus.HeaderText = "Status"
+$colStatus.FillWeight = 10
+[void]$listResults.Columns.Add($colStatus)
+
+$form.Controls.Add($listResults)
 
 $openFileDialog = New-Object System.Windows.Forms.OpenFileDialog
 $openFileDialog.Multiselect = $true
@@ -1076,7 +1180,7 @@ $btnClearFiles.Add_Click({
 })
 
 $btnCopyAllUrls.Add_Click({
-    Copy-AllResultUrls -ListView $listResults
+    Copy-AllResultUrls -GridView $listResults
 })
 
 $dropPanel.Add_DragEnter({
@@ -1095,12 +1199,17 @@ $dropPanel.Add_DragDrop({
     Add-FilesToList -Paths $paths -ListBox $listFiles
 })
 
-$copyUrlItem.Add_Click({
-    if ($listResults.SelectedItems.Count -gt 0) {
-        $url = $listResults.SelectedItems[0].SubItems[3].Text
-        if (-not [string]::IsNullOrWhiteSpace($url)) {
-            [System.Windows.Forms.Clipboard]::SetText($url)
-        }
+$listResults.Add_CellContentClick({
+    param($sender, $e)
+    if ($e.RowIndex -ge 0 -and $e.ColumnIndex -ge 0 -and $listResults.Columns[$e.ColumnIndex].Name -eq "Copy") {
+        Copy-ResultUrlFromRow -GridView $listResults -RowIndex $e.RowIndex
+    }
+})
+
+$listResults.Add_CellDoubleClick({
+    param($sender, $e)
+    if ($e.RowIndex -ge 0) {
+        Copy-ResultUrlFromRow -GridView $listResults -RowIndex $e.RowIndex
     }
 })
 
@@ -1126,7 +1235,7 @@ $btnUpload.Add_Click({
         }
 
         $form.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
-        $listResults.Items.Clear()
+        $listResults.Rows.Clear()
 
         foreach ($filePath in $script:SelectedFiles) {
             $originalName = [System.IO.Path]::GetFileName($filePath)
@@ -1141,12 +1250,8 @@ $btnUpload.Add_Click({
                 $blobPath = "$folderPath/$newName"
             }
 
-            $item = New-Object System.Windows.Forms.ListViewItem($originalName)
-            [void]$item.SubItems.Add($newName)
-            [void]$item.SubItems.Add($blobPath)
-            [void]$item.SubItems.Add("")
-            [void]$item.SubItems.Add("Uploading")
-            [void]$listResults.Items.Add($item)
+            $rowIndex = $listResults.Rows.Add($originalName, $newName, $blobPath, "", "Copy", "Uploading")
+            $row = $listResults.Rows[$rowIndex]
             $listResults.Refresh()
 
             try {
@@ -1158,18 +1263,18 @@ $btnUpload.Add_Click({
                     -BlobPath $blobPath `
                     -FilePath $filePath
 
-                $item.SubItems[3].Text = $publicUrl
-                $item.SubItems[4].Text = "Done"
+                $row.Cells["PublicUrl"].Value = $publicUrl
+                $row.Cells["Status"].Value = "Done"
             }
             catch {
-                $item.SubItems[3].Text = $_.Exception.Message
-                $item.SubItems[4].Text = "Error"
+                $row.Cells["PublicUrl"].Value = $_.Exception.Message
+                $row.Cells["Status"].Value = "Error"
             }
         }
 
         $okCount = 0
-        foreach ($row in $listResults.Items) {
-            if ($row.SubItems[4].Text -eq "Done") {
+        foreach ($row in $listResults.Rows) {
+            if (-not $row.IsNewRow -and [string]$row.Cells["Status"].Value -eq "Done") {
                 $okCount++
             }
         }
