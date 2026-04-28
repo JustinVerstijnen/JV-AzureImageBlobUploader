@@ -24,6 +24,7 @@ catch {
 $script:ApiVersion = "2023-11-03"
 $script:SelectedFiles = New-Object System.Collections.Generic.List[string]
 $script:SettingsPath = Join-Path $env:APPDATA "AzureBlobImageUploader\settings.json"
+$script:ClipboardImageFolder = Join-Path $env:TEMP "AzureBlobImageUploader\ClipboardImages"
 $script:AllFolders = @()
 
 function Ensure-SettingsFolder {
@@ -618,6 +619,65 @@ function Add-FilesToList {
     }
 }
 
+function Ensure-ClipboardImageFolder {
+    if (-not (Test-Path $script:ClipboardImageFolder)) {
+        New-Item -ItemType Directory -Path $script:ClipboardImageFolder -Force | Out-Null
+    }
+}
+
+function Add-ClipboardImageToList {
+    param(
+        [System.Windows.Forms.ListBox]$ListBox,
+        [System.Windows.Forms.Label]$StatusLabel = $null
+    )
+
+    try {
+        if (-not [System.Windows.Forms.Clipboard]::ContainsImage()) {
+            if ($StatusLabel) {
+                $StatusLabel.ForeColor = [System.Drawing.Color]::FromArgb(180, 40, 40)
+                $StatusLabel.Text = "No image found on the clipboard. Copy or snip an image first."
+            }
+            return
+        }
+
+        Ensure-ClipboardImageFolder
+
+        $image = [System.Windows.Forms.Clipboard]::GetImage()
+        if ($null -eq $image) {
+            throw "No image found on the clipboard."
+        }
+
+        $stamp = [DateTime]::Now.ToString("yyyyMMdd-HHmmss-fff")
+        $unique = [Guid]::NewGuid().ToString("N").Substring(0, 8)
+        $filePath = Join-Path $script:ClipboardImageFolder "clipboard-$stamp-$unique.png"
+
+        $bitmap = New-Object System.Drawing.Bitmap $image
+        try {
+            $bitmap.Save($filePath, [System.Drawing.Imaging.ImageFormat]::Png)
+        }
+        finally {
+            $bitmap.Dispose()
+            $image.Dispose()
+        }
+
+        Add-FilesToList -Paths @($filePath) -ListBox $ListBox
+
+        if ($StatusLabel) {
+            $StatusLabel.ForeColor = [System.Drawing.Color]::FromArgb(30, 120, 60)
+            $StatusLabel.Text = "Clipboard image added to the queue."
+        }
+    }
+    catch {
+        if ($StatusLabel) {
+            $StatusLabel.ForeColor = [System.Drawing.Color]::FromArgb(180, 40, 40)
+            $StatusLabel.Text = "Paste failed: $($_.Exception.Message)"
+        }
+        else {
+            Show-Error "Paste failed: $($_.Exception.Message)"
+        }
+    }
+}
+
 function Copy-AllResultUrls {
     param([System.Windows.Forms.DataGridView]$GridView)
 
@@ -748,6 +808,7 @@ $form.MinimumSize = New-Object System.Drawing.Size(1300, 900)
 $form.StartPosition = "CenterScreen"
 $form.BackColor = [System.Drawing.Color]::FromArgb(245, 247, 251)
 $form.TopMost = $true
+$form.KeyPreview = $true
 
 $fontRegular = New-Object System.Drawing.Font("Segoe UI", 9)
 $fontBold = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
@@ -761,7 +822,7 @@ $titleLabel.Location = New-Object System.Drawing.Point(20, 18)
 $form.Controls.Add($titleLabel)
 
 $subLabel = New-Object System.Windows.Forms.Label
-$subLabel.Text = "Drag images into the drop area, rename automatically, upload to Azure Blob Storage, and copy the public URLs."
+$subLabel.Text = "Drag images, choose files, or paste clipboard screenshots, then upload to Azure Blob Storage and copy the public URLs."
 $subLabel.AutoSize = $true
 $subLabel.Location = New-Object System.Drawing.Point(22, 58)
 $subLabel.ForeColor = [System.Drawing.Color]::FromArgb(80, 90, 110)
@@ -901,14 +962,14 @@ $dropPanel.AllowDrop = $true
 $form.Controls.Add($dropPanel)
 
 $dropLabel = New-Object System.Windows.Forms.Label
-$dropLabel.Text = "Drag images here"
+$dropLabel.Text = "Drag or paste images here"
 $dropLabel.Font = New-Object System.Drawing.Font("Segoe UI", 18, [System.Drawing.FontStyle]::Bold)
 $dropLabel.AutoSize = $true
 $dropLabel.Location = New-Object System.Drawing.Point(610, 35)
 $dropPanel.Controls.Add($dropLabel)
 
 $dropSubLabel = New-Object System.Windows.Forms.Label
-$dropSubLabel.Text = "Or click 'Choose Files' to select them manually."
+$dropSubLabel.Text = "Press Ctrl+V after using Windows Snipping Tool, or click 'Paste Image'."
 $dropSubLabel.AutoSize = $true
 $dropSubLabel.Location = New-Object System.Drawing.Point(598, 76)
 $dropSubLabel.ForeColor = [System.Drawing.Color]::FromArgb(80, 90, 110)
@@ -936,9 +997,17 @@ $btnAddFiles.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawi
 $btnAddFiles.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left
 $form.Controls.Add($btnAddFiles)
 
+$btnPasteImage = New-Object System.Windows.Forms.Button
+$btnPasteImage.Text = "Paste Image"
+$btnPasteImage.Location = New-Object System.Drawing.Point(185, 725)
+$btnPasteImage.Size = New-Object System.Drawing.Size(150, 42)
+$btnPasteImage.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Regular)
+$btnPasteImage.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left
+$form.Controls.Add($btnPasteImage)
+
 $btnClearFiles = New-Object System.Windows.Forms.Button
 $btnClearFiles.Text = "Clear Files"
-$btnClearFiles.Location = New-Object System.Drawing.Point(185, 725)
+$btnClearFiles.Location = New-Object System.Drawing.Point(350, 725)
 $btnClearFiles.Size = New-Object System.Drawing.Size(150, 42)
 $btnClearFiles.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Regular)
 $btnClearFiles.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left
@@ -946,7 +1015,7 @@ $form.Controls.Add($btnClearFiles)
 
 $btnUpload = New-Object System.Windows.Forms.Button
 $btnUpload.Text = "Upload Files"
-$btnUpload.Location = New-Object System.Drawing.Point(350, 725)
+$btnUpload.Location = New-Object System.Drawing.Point(515, 725)
 $btnUpload.Size = New-Object System.Drawing.Size(220, 42)
 $btnUpload.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
 $btnUpload.BackColor = [System.Drawing.Color]::FromArgb(36, 140, 76)
@@ -1177,6 +1246,10 @@ $btnAddFiles.Add_Click({
     }
 })
 
+$btnPasteImage.Add_Click({
+    Add-ClipboardImageToList -ListBox $listFiles -StatusLabel $lblUploadStatus
+})
+
 $btnClearFiles.Add_Click({
     $script:SelectedFiles.Clear()
     $listFiles.Items.Clear()
@@ -1200,6 +1273,19 @@ $dropPanel.Add_DragDrop({
     param($sender, $e)
     $paths = $e.Data.GetData([System.Windows.Forms.DataFormats]::FileDrop)
     Add-FilesToList -Paths $paths -ListBox $listFiles
+})
+
+$form.Add_KeyDown({
+    param($sender, $e)
+    if ($e.Control -and $e.KeyCode -eq [System.Windows.Forms.Keys]::V) {
+        Add-ClipboardImageToList -ListBox $listFiles -StatusLabel $lblUploadStatus
+        $e.SuppressKeyPress = $true
+        $e.Handled = $true
+    }
+})
+
+$dropPanel.Add_Click({
+    $form.Focus()
 })
 
 $listResults.Add_CellContentClick({
@@ -1299,6 +1385,7 @@ $form.Add_Shown({
     $form.BringToFront()
     $form.Focus()
     $form.TopMost = $true
+$form.KeyPreview = $true
     Start-Sleep -Milliseconds 200
     $form.TopMost = $false
 
