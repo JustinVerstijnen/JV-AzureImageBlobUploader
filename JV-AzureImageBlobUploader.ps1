@@ -26,6 +26,10 @@ $script:SelectedFiles = New-Object System.Collections.Generic.List[string]
 $script:SettingsPath = Join-Path $env:APPDATA "AzureBlobImageUploader\settings.json"
 $script:ClipboardImageFolder = Join-Path $env:TEMP "AzureBlobImageUploader\ClipboardImages"
 $script:AllFolders = @()
+$script:AutoUploadEnabled = $true
+$script:IsUploading = $false
+$script:PendingAutoUpload = $false
+$script:TopPanelExpanded = $true
 
 function Ensure-SettingsFolder {
     $dir = Split-Path $script:SettingsPath -Parent
@@ -600,6 +604,8 @@ function Add-FilesToList {
         [System.Windows.Forms.ListBox]$ListBox
     )
 
+    $addedCount = 0
+
     foreach ($path in $Paths) {
         if (-not (Test-Path $path -PathType Leaf)) {
             continue
@@ -615,8 +621,11 @@ function Add-FilesToList {
         if (-not $script:SelectedFiles.Contains($path)) {
             $script:SelectedFiles.Add($path)
             [void]$ListBox.Items.Add($path)
+            $addedCount++
         }
     }
+
+    return $addedCount
 }
 
 function Ensure-ClipboardImageFolder {
@@ -660,7 +669,7 @@ function Add-ClipboardImageToList {
             $image.Dispose()
         }
 
-        Add-FilesToList -Paths @($filePath) -ListBox $ListBox
+        [void](Add-FilesToList -Paths @($filePath) -ListBox $ListBox)
 
         if ($StatusLabel) {
             $StatusLabel.ForeColor = [System.Drawing.Color]::FromArgb(30, 120, 60)
@@ -814,19 +823,28 @@ $fontRegular = New-Object System.Drawing.Font("Segoe UI", 9)
 $fontBold = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
 $fontTitle = New-Object System.Drawing.Font("Segoe UI", 18, [System.Drawing.FontStyle]::Bold)
 
+$script:ExpandedTopPanelHeight = 390
+$script:CollapsedTopPanelHeight = 80
+
+$topPanel = New-Object System.Windows.Forms.Panel
+$topPanel.Location = New-Object System.Drawing.Point(0, 0)
+$topPanel.Size = New-Object System.Drawing.Size(1480, $script:ExpandedTopPanelHeight)
+$topPanel.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+$form.Controls.Add($topPanel)
+
 $titleLabel = New-Object System.Windows.Forms.Label
 $titleLabel.Text = "Azure Blob Image Uploader"
 $titleLabel.Font = $fontTitle
 $titleLabel.AutoSize = $true
 $titleLabel.Location = New-Object System.Drawing.Point(20, 18)
-$form.Controls.Add($titleLabel)
+$topPanel.Controls.Add($titleLabel)
 
 $subLabel = New-Object System.Windows.Forms.Label
 $subLabel.Text = "Drag images, choose files, or paste clipboard screenshots, then upload to Azure Blob Storage and copy the public URLs."
 $subLabel.AutoSize = $true
 $subLabel.Location = New-Object System.Drawing.Point(22, 58)
 $subLabel.ForeColor = [System.Drawing.Color]::FromArgb(80, 90, 110)
-$form.Controls.Add($subLabel)
+$topPanel.Controls.Add($subLabel)
 
 $settingsGroup = New-Object System.Windows.Forms.GroupBox
 $settingsGroup.Text = "Settings"
@@ -834,7 +852,7 @@ $settingsGroup.Font = $fontBold
 $settingsGroup.Location = New-Object System.Drawing.Point(20, 90)
 $settingsGroup.Size = New-Object System.Drawing.Size(540, 260)
 $settingsGroup.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left
-$form.Controls.Add($settingsGroup)
+$topPanel.Controls.Add($settingsGroup)
 
 $uploadGroup = New-Object System.Windows.Forms.GroupBox
 $uploadGroup.Text = "Upload"
@@ -842,7 +860,7 @@ $uploadGroup.Font = $fontBold
 $uploadGroup.Location = New-Object System.Drawing.Point(580, 90)
 $uploadGroup.Size = New-Object System.Drawing.Size(420, 260)
 $uploadGroup.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left
-$form.Controls.Add($uploadGroup)
+$topPanel.Controls.Add($uploadGroup)
 
 $explorerGroup = New-Object System.Windows.Forms.GroupBox
 $explorerGroup.Text = "Container Folder Explorer"
@@ -850,7 +868,7 @@ $explorerGroup.Font = $fontBold
 $explorerGroup.Location = New-Object System.Drawing.Point(1020, 90)
 $explorerGroup.Size = New-Object System.Drawing.Size(440, 300)
 $explorerGroup.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
-$form.Controls.Add($explorerGroup)
+$topPanel.Controls.Add($explorerGroup)
 
 function New-Label {
     param($Text, $X, $Y, $Parent)
@@ -951,6 +969,22 @@ $listFolders.Location = New-Object System.Drawing.Point(15, 110)
 $listFolders.Size = New-Object System.Drawing.Size(405, 165)
 $listFolders.Font = $fontRegular
 $explorerGroup.Controls.Add($listFolders)
+
+$topSummaryLabel = New-Object System.Windows.Forms.Label
+$topSummaryLabel.Text = ""
+$topSummaryLabel.AutoSize = $false
+$topSummaryLabel.Size = New-Object System.Drawing.Size(980, 22)
+$topSummaryLabel.Location = New-Object System.Drawing.Point(22, 52)
+$topSummaryLabel.ForeColor = [System.Drawing.Color]::FromArgb(80, 90, 110)
+$topSummaryLabel.Visible = $false
+$topPanel.Controls.Add($topSummaryLabel)
+
+$btnToggleTopPanel = New-Object System.Windows.Forms.Button
+$btnToggleTopPanel.Text = "▲ Hide connection settings"
+$btnToggleTopPanel.Location = New-Object System.Drawing.Point(1220, 20)
+$btnToggleTopPanel.Size = New-Object System.Drawing.Size(220, 32)
+$btnToggleTopPanel.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+$topPanel.Controls.Add($btnToggleTopPanel)
 
 $dropPanel = New-Object System.Windows.Forms.Panel
 $dropPanel.Location = New-Object System.Drawing.Point(20, 410)
@@ -1107,6 +1141,248 @@ if ($saved) {
     if ($saved.FolderPath)     { $txtFolderPath.Text = [string]$saved.FolderPath }
 }
 
+
+$script:MainAreaControls = @(
+    $dropPanel,
+    $listLabel,
+    $listFiles,
+    $btnAddFiles,
+    $btnPasteImage,
+    $btnClearFiles,
+    $btnUpload,
+    $resultsLabel,
+    $listResults
+)
+
+foreach ($control in $script:MainAreaControls) {
+    $control.Tag = $control.Location.Y
+}
+
+function Get-TopPanelSummaryText {
+    $container = $cmbContainer.Text.Trim()
+    $folderPath = Normalize-FolderPath -FolderPath $txtFolderPath.Text.Trim()
+    $postId = $txtPostId.Text.Trim()
+
+    if ([string]::IsNullOrWhiteSpace($container)) {
+        $container = "no container selected"
+    }
+    if ([string]::IsNullOrWhiteSpace($folderPath)) {
+        $folderPath = "no folder selected"
+    }
+    if ([string]::IsNullOrWhiteSpace($postId)) {
+        $postId = "no post ID"
+    }
+
+    return "Container: $container   |   Folder: $folderPath   |   Post ID: $postId"
+}
+
+function Set-TopPanelExpanded {
+    param([bool]$Expanded)
+
+    $script:TopPanelExpanded = $Expanded
+    $offset = 0
+
+    if ($Expanded) {
+        $topPanel.Height = $script:ExpandedTopPanelHeight
+        $subLabel.Visible = $true
+        $settingsGroup.Visible = $true
+        $uploadGroup.Visible = $true
+        $explorerGroup.Visible = $true
+        $topSummaryLabel.Visible = $false
+        $btnToggleTopPanel.Text = "▲ Hide connection settings"
+        $offset = 0
+    }
+    else {
+        $topPanel.Height = $script:CollapsedTopPanelHeight
+        $subLabel.Visible = $false
+        $settingsGroup.Visible = $false
+        $uploadGroup.Visible = $false
+        $explorerGroup.Visible = $false
+        $topSummaryLabel.Text = Get-TopPanelSummaryText
+        $topSummaryLabel.Visible = $true
+        $btnToggleTopPanel.Text = "▼ Show connection settings"
+        $offset = -($script:ExpandedTopPanelHeight - $script:CollapsedTopPanelHeight)
+    }
+
+    foreach ($control in $script:MainAreaControls) {
+        $baseY = [int]$control.Tag
+        $control.Location = New-Object System.Drawing.Point($control.Location.X, ($baseY + $offset))
+    }
+}
+
+function Test-UploadReadyForUi {
+    param([bool]$RequireFolder = $true)
+
+    try {
+        $null = Get-AzureConfigFromUi `
+            -AccountNameTextBox $txtAccountName `
+            -EndpointSuffixTextBox $txtEndpointSuffix `
+            -AccessKeyTextBox $txtAccessKey
+
+        if ([string]::IsNullOrWhiteSpace($cmbContainer.Text.Trim())) {
+            return $false
+        }
+        if ($txtPostId.Text.Trim() -notmatch '^\d+$') {
+            return $false
+        }
+        if ($RequireFolder -and [string]::IsNullOrWhiteSpace((Normalize-FolderPath -FolderPath $txtFolderPath.Text.Trim()))) {
+            return $false
+        }
+
+        return $true
+    }
+    catch {
+        return $false
+    }
+}
+
+function Try-CollapseTopPanelWhenReady {
+    if (Test-UploadReadyForUi -RequireFolder $true) {
+        Set-TopPanelExpanded -Expanded $false
+    }
+}
+
+function Update-SelectedFilesAfterUpload {
+    param([hashtable]$UploadStatusByPath)
+
+    $remainingFiles = New-Object System.Collections.Generic.List[string]
+    $listFiles.Items.Clear()
+
+    foreach ($filePath in $script:SelectedFiles) {
+        if (-not $UploadStatusByPath.ContainsKey($filePath) -or $UploadStatusByPath[$filePath] -ne "Done") {
+            $remainingFiles.Add($filePath)
+            [void]$listFiles.Items.Add($filePath)
+        }
+    }
+
+    $script:SelectedFiles.Clear()
+    foreach ($filePath in $remainingFiles) {
+        $script:SelectedFiles.Add($filePath)
+    }
+}
+
+function Invoke-UploadSelectedFiles {
+    if ($script:IsUploading) {
+        $script:PendingAutoUpload = $true
+        return
+    }
+
+    $script:IsUploading = $true
+    $script:PendingAutoUpload = $false
+
+    try {
+        $cfg = Get-AzureConfigFromUi `
+            -AccountNameTextBox $txtAccountName `
+            -EndpointSuffixTextBox $txtEndpointSuffix `
+            -AccessKeyTextBox $txtAccessKey
+
+        $container = $cmbContainer.Text.Trim()
+        $postId = $txtPostId.Text.Trim()
+        $folderPath = Normalize-FolderPath -FolderPath $txtFolderPath.Text.Trim()
+
+        if ([string]::IsNullOrWhiteSpace($container)) {
+            throw "Please select or enter a container."
+        }
+        if ($postId -notmatch '^\d+$') {
+            throw "Post ID must be a whole number."
+        }
+        if ([string]::IsNullOrWhiteSpace($folderPath)) {
+            throw "Please select or enter a folder / blob prefix before uploading."
+        }
+        if ($script:SelectedFiles.Count -eq 0) {
+            throw "Please add at least one image file first."
+        }
+
+        $form.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+        $listResults.Rows.Clear()
+        $uploadCount = $script:SelectedFiles.Count
+        $uploadStatusByPath = @{}
+
+        foreach ($filePath in @($script:SelectedFiles)) {
+            $originalName = [System.IO.Path]::GetFileName($filePath)
+            $ext = [System.IO.Path]::GetExtension($filePath).ToLowerInvariant()
+            $hash12 = Get-FileHash12 -FilePath $filePath
+            $newName = "jv-media-$postId-$hash12$ext"
+            $blobPath = "$folderPath/$newName"
+
+            $rowIndex = $listResults.Rows.Add($originalName, $newName, $blobPath, "", "Copy", "Uploading")
+            $row = $listResults.Rows[$rowIndex]
+            $listResults.Refresh()
+
+            try {
+                $publicUrl = Upload-BlobFile `
+                    -AccountName $cfg.AccountName `
+                    -EndpointSuffix $cfg.EndpointSuffix `
+                    -AccessKey $cfg.AccessKey `
+                    -Container $container `
+                    -BlobPath $blobPath `
+                    -FilePath $filePath
+
+                $row.Cells["PublicUrl"].Value = $publicUrl
+                $row.Cells["Status"].Value = "Done"
+                $uploadStatusByPath[$filePath] = "Done"
+            }
+            catch {
+                $row.Cells["PublicUrl"].Value = $_.Exception.Message
+                $row.Cells["Status"].Value = "Error"
+                $uploadStatusByPath[$filePath] = "Error"
+            }
+        }
+
+        $okCount = 0
+        foreach ($row in $listResults.Rows) {
+            if (-not $row.IsNewRow -and [string]$row.Cells["Status"].Value -eq "Done") {
+                $okCount++
+            }
+        }
+
+        Update-SelectedFilesAfterUpload -UploadStatusByPath $uploadStatusByPath
+
+        if ($okCount -eq $uploadCount) {
+            $lblUploadStatus.ForeColor = [System.Drawing.Color]::FromArgb(30, 120, 60)
+        }
+        else {
+            $lblUploadStatus.ForeColor = [System.Drawing.Color]::FromArgb(180, 100, 20)
+        }
+
+        $lblUploadStatus.Text = "$okCount of $uploadCount file(s) uploaded successfully."
+        Try-CollapseTopPanelWhenReady
+    }
+    catch {
+        $lblUploadStatus.ForeColor = [System.Drawing.Color]::FromArgb(180, 40, 40)
+        $lblUploadStatus.Text = $_.Exception.Message
+    }
+    finally {
+        $form.Cursor = [System.Windows.Forms.Cursors]::Default
+        $script:IsUploading = $false
+
+        if ($script:PendingAutoUpload -and $script:SelectedFiles.Count -gt 0) {
+            Start-AutoUploadIfReady
+        }
+    }
+}
+
+function Start-AutoUploadIfReady {
+    if (-not $script:AutoUploadEnabled) {
+        return
+    }
+    if ($script:SelectedFiles.Count -eq 0) {
+        return
+    }
+    if (-not (Test-UploadReadyForUi -RequireFolder $true)) {
+        $lblUploadStatus.ForeColor = [System.Drawing.Color]::FromArgb(180, 100, 20)
+        $lblUploadStatus.Text = "Files added to queue. Select a container, post ID and folder to upload automatically."
+        return
+    }
+
+    Try-CollapseTopPanelWhenReady
+    Invoke-UploadSelectedFiles
+}
+
+$btnToggleTopPanel.Add_Click({
+    Set-TopPanelExpanded -Expanded (-not $script:TopPanelExpanded)
+})
+
 $btnSaveSettings.Add_Click({
     try {
         Save-Settings `
@@ -1138,6 +1414,10 @@ $btnClearSettings.Add_Click({
     $txtFolderFilter.Text = ""
     $listFolders.Items.Clear()
     $script:AllFolders = @()
+$script:AutoUploadEnabled = $true
+$script:IsUploading = $false
+$script:PendingAutoUpload = $false
+$script:TopPanelExpanded = $true
     $lblSettingsStatus.ForeColor = [System.Drawing.Color]::FromArgb(30, 120, 60)
     $lblSettingsStatus.Text = "Settings cleared."
 })
@@ -1212,6 +1492,7 @@ $btnLoadFolders.Add_Click({
 
         $lblUploadStatus.ForeColor = [System.Drawing.Color]::FromArgb(30, 120, 60)
         $lblUploadStatus.Text = "$($script:AllFolders.Count) folder suggestion(s) loaded."
+        Try-CollapseTopPanelWhenReady
     }
     catch {
         $lblUploadStatus.ForeColor = [System.Drawing.Color]::FromArgb(180, 40, 40)
@@ -1237,17 +1518,26 @@ $btnApplyFolderFilter.Add_Click({
 $listFolders.Add_DoubleClick({
     if ($listFolders.SelectedItem) {
         $txtFolderPath.Text = [string]$listFolders.SelectedItem
+        Try-CollapseTopPanelWhenReady
+        Start-AutoUploadIfReady
     }
 })
 
 $btnAddFiles.Add_Click({
     if ($openFileDialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-        Add-FilesToList -Paths $openFileDialog.FileNames -ListBox $listFiles
+        $addedCount = Add-FilesToList -Paths $openFileDialog.FileNames -ListBox $listFiles
+        if ($addedCount -gt 0) {
+            Start-AutoUploadIfReady
+        }
     }
 })
 
 $btnPasteImage.Add_Click({
+    $beforeCount = $script:SelectedFiles.Count
     Add-ClipboardImageToList -ListBox $listFiles -StatusLabel $lblUploadStatus
+    if ($script:SelectedFiles.Count -gt $beforeCount) {
+        Start-AutoUploadIfReady
+    }
 })
 
 $btnClearFiles.Add_Click({
@@ -1272,13 +1562,20 @@ $dropPanel.Add_DragEnter({
 $dropPanel.Add_DragDrop({
     param($sender, $e)
     $paths = $e.Data.GetData([System.Windows.Forms.DataFormats]::FileDrop)
-    Add-FilesToList -Paths $paths -ListBox $listFiles
+    $addedCount = Add-FilesToList -Paths $paths -ListBox $listFiles
+    if ($addedCount -gt 0) {
+        Start-AutoUploadIfReady
+    }
 })
 
 $form.Add_KeyDown({
     param($sender, $e)
     if ($e.Control -and $e.KeyCode -eq [System.Windows.Forms.Keys]::V) {
+        $beforeCount = $script:SelectedFiles.Count
         Add-ClipboardImageToList -ListBox $listFiles -StatusLabel $lblUploadStatus
+        if ($script:SelectedFiles.Count -gt $beforeCount) {
+            Start-AutoUploadIfReady
+        }
         $e.SuppressKeyPress = $true
         $e.Handled = $true
     }
@@ -1303,81 +1600,7 @@ $listResults.Add_CellDoubleClick({
 })
 
 $btnUpload.Add_Click({
-    try {
-        $cfg = Get-AzureConfigFromUi `
-            -AccountNameTextBox $txtAccountName `
-            -EndpointSuffixTextBox $txtEndpointSuffix `
-            -AccessKeyTextBox $txtAccessKey
-
-        $container = $cmbContainer.Text.Trim()
-        $postId = $txtPostId.Text.Trim()
-        $folderPath = Normalize-FolderPath -FolderPath $txtFolderPath.Text.Trim()
-
-        if ([string]::IsNullOrWhiteSpace($container)) {
-            throw "Please select or enter a container."
-        }
-        if ($postId -notmatch '^\d+$') {
-            throw "Post ID must be a whole number."
-        }
-        if ($script:SelectedFiles.Count -eq 0) {
-            throw "Please add at least one image file first."
-        }
-
-        $form.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
-        $listResults.Rows.Clear()
-
-        foreach ($filePath in $script:SelectedFiles) {
-            $originalName = [System.IO.Path]::GetFileName($filePath)
-            $ext = [System.IO.Path]::GetExtension($filePath).ToLowerInvariant()
-            $hash12 = Get-FileHash12 -FilePath $filePath
-            $newName = "jv-media-$postId-$hash12$ext"
-
-            if ([string]::IsNullOrWhiteSpace($folderPath)) {
-                $blobPath = $newName
-            }
-            else {
-                $blobPath = "$folderPath/$newName"
-            }
-
-            $rowIndex = $listResults.Rows.Add($originalName, $newName, $blobPath, "", "Copy", "Uploading")
-            $row = $listResults.Rows[$rowIndex]
-            $listResults.Refresh()
-
-            try {
-                $publicUrl = Upload-BlobFile `
-                    -AccountName $cfg.AccountName `
-                    -EndpointSuffix $cfg.EndpointSuffix `
-                    -AccessKey $cfg.AccessKey `
-                    -Container $container `
-                    -BlobPath $blobPath `
-                    -FilePath $filePath
-
-                $row.Cells["PublicUrl"].Value = $publicUrl
-                $row.Cells["Status"].Value = "Done"
-            }
-            catch {
-                $row.Cells["PublicUrl"].Value = $_.Exception.Message
-                $row.Cells["Status"].Value = "Error"
-            }
-        }
-
-        $okCount = 0
-        foreach ($row in $listResults.Rows) {
-            if (-not $row.IsNewRow -and [string]$row.Cells["Status"].Value -eq "Done") {
-                $okCount++
-            }
-        }
-
-        $lblUploadStatus.ForeColor = [System.Drawing.Color]::FromArgb(30, 120, 60)
-        $lblUploadStatus.Text = "$okCount of $($script:SelectedFiles.Count) file(s) uploaded successfully."
-    }
-    catch {
-        $lblUploadStatus.ForeColor = [System.Drawing.Color]::FromArgb(180, 40, 40)
-        $lblUploadStatus.Text = $_.Exception.Message
-    }
-    finally {
-        $form.Cursor = [System.Windows.Forms.Cursors]::Default
-    }
+    Invoke-UploadSelectedFiles
 })
 
 $form.Add_Shown({
@@ -1385,7 +1608,7 @@ $form.Add_Shown({
     $form.BringToFront()
     $form.Focus()
     $form.TopMost = $true
-$form.KeyPreview = $true
+    $form.KeyPreview = $true
     Start-Sleep -Milliseconds 200
     $form.TopMost = $false
 
@@ -1396,6 +1619,8 @@ $form.KeyPreview = $true
         -AccessKeyTextBox $txtAccessKey `
         -ContainerComboBox $cmbContainer `
         -StatusLabel $lblSettingsStatus
+
+    Try-CollapseTopPanelWhenReady
 })
 
 [void]$form.ShowDialog()
